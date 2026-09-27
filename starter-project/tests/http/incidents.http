@@ -25,6 +25,14 @@ Accept: application/json
 GET {{host}}/api/incidents?status=Unknown
 Accept: application/json
 
-### Lab 1 extension point: expected 501 before student implementation
+### Severity summary: expected 200, full severity list with zero-count groups, ordered by criticality (Low, Medium, High, Critical)
 GET {{host}}/api/incidents/severity-summary
+Accept: application/json
+
+### Severity summary with status filter: expected 200, only Medium has count 1 (Triaged)
+GET {{host}}/api/incidents/severity-summary?status=Triaged
+Accept: application/json
+
+### Severity summary with invalid status filter: expected 400 Validation Problem Details
+GET {{host}}/api/incidents/severity-summary?status=Unknown
 Accept: application/json
