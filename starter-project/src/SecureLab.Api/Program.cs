@@ -1,4 +1,3 @@
-using System.Threading.RateLimiting;
 using SecureLab.Api.Scaffolding;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
