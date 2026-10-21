@@ -1,4 +1,8 @@
+using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
 
@@ -6,6 +10,9 @@ namespace SecureLab.Api.Scaffolding;
 
 public static class Lab03Identity
 {
+    private static readonly Regex UserNameRegex =
+        new(@"^[A-Za-z0-9\-._@+]{3,64}$", RegexOptions.Compiled);
+
     public static void AddLab03Identity(this WebApplicationBuilder builder)
     {
         builder.Services.AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
@@ -37,41 +44,102 @@ public static class Lab03Identity
     {
         app.MapPost("/api/auth/register", async (RegistrationInput input, UserManager<ApplicationUser> users) =>
         {
-            // ЛР 03: завершіть DTO validation та перевірки довірчої межі.
-            if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrWhiteSpace(input.Email)
-                || string.IsNullOrWhiteSpace(input.DisplayName) || string.IsNullOrEmpty(input.Password))
-                return Results.BadRequest();
+            if (!IsValidRegistration(input))
+                return Results.BadRequest(new { message = "Registration failed" });
+
             var user = new ApplicationUser
             {
-                Id = Guid.NewGuid(), UserName = input.UserName.Trim(), Email = input.Email.Trim(),
-                DisplayName = input.DisplayName.Trim()
+                Id = Guid.NewGuid(),
+                UserName = input.UserName!.Trim(),
+                Email = input.Email!.Trim(),
+                DisplayName = input.DisplayName!.Trim()
             };
-            var result = await users.CreateAsync(user, input.Password);
-            if (!result.Succeeded) return Results.BadRequest(new { message = "Registration failed" });
+
+            var result = await users.CreateAsync(user, input.Password!);
+            if (!result.Succeeded)
+            {
+                var codes = result.Errors.Select(e => e.Code).ToHashSet();
+                return codes.Contains("DuplicateUserName") || codes.Contains("DuplicateEmail")
+                    ? Results.Conflict(new { message = "Account already exists" })
+                    : Results.BadRequest(new { message = "Registration failed" });
+            }
+
             var role = await users.AddToRoleAsync(user, DbSeeder.ReporterRole);
-            if (!role.Succeeded) throw new InvalidOperationException("Default role assignment failed.");
-            return Results.Created("/api/me", new { user.Id, user.UserName, user.DisplayName });
+            if (!role.Succeeded)
+                throw new InvalidOperationException("Default role assignment failed.");
+
+            return Results.Created("/api/me",
+                new RegisterResponse(user.Id, user.UserName!, user.DisplayName));
         });
-        app.MapPost("/api/auth/login", async (LoginInput input, SignInManager<ApplicationUser> signIn) =>
+
+        app.MapPost("/api/auth/login", async (
+            LoginInput input,
+            SignInManager<ApplicationUser> signIn,
+            HttpContext httpContext,
+            ILoggerFactory loggerFactory) =>
         {
+            var logger = loggerFactory.CreateLogger("SecureLab.Auth");
+
             if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrEmpty(input.Password))
+            {
+                logger.LogInformation("AuthEvent {EventType} {Result} {TraceId}",
+                    "login", "failure", httpContext.TraceIdentifier);
                 return Results.Unauthorized();
+            }
+
             var result = await signIn.PasswordSignInAsync(input.UserName, input.Password, false, false);
+
+            logger.LogInformation("AuthEvent {EventType} {Result} {TraceId}",
+                "login", result.Succeeded ? "success" : "failure", httpContext.TraceIdentifier);
+
             return result.Succeeded ? Results.NoContent() : Results.Unauthorized();
-        });
-        app.MapPost("/api/auth/logout", () => Results.StatusCode(StatusCodes.Status501NotImplemented));
-        // Навмисно хибна навчальна довіра: ЛР 03 замінює заявлений id на verified principal.
-        app.MapGet("/api/me", async (HttpContext context, SecureLabDbContext db) =>
+        }).RequireRateLimiting("login");
+
+        app.MapPost("/api/auth/logout", async (SignInManager<ApplicationUser> signIn) =>
         {
-            if (!Guid.TryParse(context.Request.Headers["X-Demo-UserId"], out var claimedId))
-                return Results.StatusCode(StatusCodes.Status501NotImplemented);
-            var user = await db.Users.FindAsync(claimedId);
-            return user is null ? Results.NotFound() : Results.Ok(new { user.Id, user.UserName, user.DisplayName });
-        });
-        // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.
+            await signIn.SignOutAsync();
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapGet("/api/me", GetCurrentUser).RequireAuthorization();
+
         app.MapGet("/api/auth/session-check", () => Results.NoContent()).RequireAuthorization();
+    }
+
+    private static async Task<IResult> GetCurrentUser(HttpContext httpContext, SecureLabDbContext db)
+    {
+        var idClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(idClaim, out var verifiedUserId))
+            return Results.Problem(statusCode: StatusCodes.Status500InternalServerError);
+
+        var me = await db.Users.AsNoTracking()
+            .Where(u => u.Id == verifiedUserId)
+            .Select(u => new MeResponse(u.Id, u.UserName!, u.DisplayName))
+            .SingleOrDefaultAsync();
+
+        return me is null ? Results.Unauthorized() : Results.Ok(me);
+    }
+
+    private static bool IsValidRegistration(RegistrationInput r)
+    {
+        if (r.UserName is not { } userName || !UserNameRegex.IsMatch(userName.Trim()))
+            return false;
+
+        if (r.Email is not { } email)
+            return false;
+        var trimmedEmail = email.Trim();
+        if (trimmedEmail.Length is 0 or > 256 || !new EmailAddressAttribute().IsValid(trimmedEmail))
+            return false;
+
+        if (r.DisplayName is not { } displayName
+            || string.IsNullOrWhiteSpace(displayName) || displayName.Trim().Length > 120)
+            return false;
+
+        return !string.IsNullOrEmpty(r.Password) && r.Password.Length <= 128;
     }
 }
 
 public sealed record RegistrationInput(string? UserName, string? Email, string? DisplayName, string? Password);
 public sealed record LoginInput(string? UserName, string? Password);
+public sealed record RegisterResponse(Guid Id, string UserName, string DisplayName);
+public sealed record MeResponse(Guid Id, string UserName, string DisplayName);
