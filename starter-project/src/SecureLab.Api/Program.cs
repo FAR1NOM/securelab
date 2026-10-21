@@ -5,6 +5,7 @@ using Scalar.AspNetCore;
 using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
 using SecureLab.Api.Presentation.Endpoints;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
