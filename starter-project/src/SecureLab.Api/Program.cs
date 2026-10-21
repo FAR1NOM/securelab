@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using SecureLab.Api.Scaffolding;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
@@ -22,7 +23,7 @@ builder.Services.AddDbContext<SecureLabDbContext>(options =>
     options.UseNpgsql(connectionString));
 builder.Services.AddScoped<IncidentQueries>();
 
-builder.AddLab03Identity(); 
+builder.AddLab03Identity();
 
 builder.Services.AddRateLimiter(o =>
 {
@@ -63,9 +64,9 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
-app.UseAuthentication();   
-app.UseAuthorization();    
-app.UseRateLimiter();      
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseRateLimiter();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -81,7 +82,7 @@ app.MapGet("/health", async (SecureLabDbContext dbContext, CancellationToken can
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 
 app.MapIncidentEndpoints();
-app.MapLab03Identity();   
+app.MapLab03Identity();
 app.MapLab02Endpoints();
 app.MapFallbackToFile("index.html");
 
