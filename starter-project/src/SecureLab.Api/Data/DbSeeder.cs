@@ -1,3 +1,4 @@
+
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Data.Entities;
@@ -21,8 +22,10 @@ public static class DbSeeder
 
     private static readonly Guid ReporterRoleId =
         Guid.Parse("50000000-0000-0000-0000-000000000001");
+
     private static readonly Guid AnalystRoleId =
         Guid.Parse("50000000-0000-0000-0000-000000000002");
+
     private static readonly Guid AdministratorRoleId =
         Guid.Parse("50000000-0000-0000-0000-000000000003");
 
@@ -37,22 +40,36 @@ public static class DbSeeder
         await EnsureRoleAsync(roleManager, AdministratorRoleId, AdministratorRole);
 
         var password = configuration["SeedUsers:Password"];
+
         var userCount = await dbContext.Users.CountAsync(user =>
-            user.Id == AliceId || user.Id == BobId || user.Id == MorganId || user.Id == AdminId);
-        if ((userCount < 4 || await dbContext.Users.AnyAsync(user => user.PasswordHash == null)) && string.IsNullOrWhiteSpace(password))
+            user.Id == AliceId ||
+            user.Id == BobId ||
+            user.Id == MorganId ||
+            user.Id == AdminId);
+
+        if ((userCount < 4 ||
+             await dbContext.Users.AnyAsync(user => user.PasswordHash == null)) &&
+            string.IsNullOrWhiteSpace(password))
         {
             throw new InvalidOperationException(
                 "SeedUsers:Password має бути передано поза Git для створення локальних навчальних акаунтів.");
         }
 
         var alice = await EnsureUserAsync(
-            userManager, AliceId, "alice", "alice@example.test", "Аліса Коваль", ReporterRole, password);
+            userManager, AliceId, "alice", "alice@example.test",
+            "Аліса Коваль", ReporterRole, password);
+
         var bob = await EnsureUserAsync(
-            userManager, BobId, "bob", "bob@example.test", "Боб Мельник", ReporterRole, password);
+            userManager, BobId, "bob", "bob@example.test",
+            "Боб Мельник", ReporterRole, password);
+
         var morgan = await EnsureUserAsync(
-            userManager, MorganId, "morgan", "morgan@example.test", "Морган Литвин", AnalystRole, password);
+            userManager, MorganId, "morgan", "morgan@example.test",
+            "Морган Литвин", AnalystRole, password);
+
         _ = await EnsureUserAsync(
-            userManager, AdminId, "admin", "admin@example.test", "Локальний адміністратор", AdministratorRole, password);
+            userManager, AdminId, "admin", "admin@example.test",
+            "Локальний адміністратор", AdministratorRole, password);
 
         if (await dbContext.Incidents.AnyAsync())
         {
@@ -71,6 +88,7 @@ public static class DbSeeder
             CreatedAtUtc = new DateTimeOffset(2026, 8, 1, 9, 0, 0, TimeSpan.Zero),
             UpdatedAtUtc = new DateTimeOffset(2026, 8, 1, 10, 0, 0, TimeSpan.Zero)
         };
+
         var bobIncident = new Incident
         {
             Id = BobIncidentId,
@@ -83,9 +101,10 @@ public static class DbSeeder
             CreatedAtUtc = new DateTimeOffset(2026, 8, 2, 14, 20, 0, TimeSpan.Zero),
             UpdatedAtUtc = new DateTimeOffset(2026, 8, 2, 15, 0, 0, TimeSpan.Zero)
         };
+
         var safeTextIncident = new Incident
         {
-            Id = Guid.Parse("20000000-0000-0000-0000-000000000003"),
+            Id = SafeTextIncidentId,
             Owner = alice,
             Title = "Перевірка журналу комп'ютерного класу",
             Description = "Текст <script> має відображатися як текст, а не виконуватися як HTML.",
@@ -96,7 +115,11 @@ public static class DbSeeder
             UpdatedAtUtc = new DateTimeOffset(2026, 8, 3, 8, 0, 0, TimeSpan.Zero)
         };
 
-        dbContext.Incidents.AddRange(aliceIncident, bobIncident, safeTextIncident);
+        dbContext.Incidents.AddRange(
+            aliceIncident,
+            bobIncident,
+            safeTextIncident);
+
         dbContext.IncidentComments.AddRange(
             new IncidentComment
             {
@@ -115,7 +138,17 @@ public static class DbSeeder
                 Text = "Розпочато перевірку журналу автентифікації.",
                 IsInternal = false,
                 CreatedAtUtc = new DateTimeOffset(2026, 8, 2, 14, 40, 0, TimeSpan.Zero)
+            },
+            new IncidentComment
+            {
+                Id = Guid.Parse("30000000-0000-0000-0000-000000000003"),
+                Incident = aliceIncident,
+                Author = morgan,
+                Text = "Внутрішня примітка для аналітиків.",
+                IsInternal = true,
+                CreatedAtUtc = new DateTimeOffset(2026, 8, 1, 9, 45, 0, TimeSpan.Zero)
             });
+
         dbContext.IncidentStatusHistory.Add(
             new IncidentStatusHistory
             {
@@ -146,6 +179,7 @@ public static class DbSeeder
             Id = id,
             Name = name
         });
+
         EnsureSucceeded(result, $"create role {name}");
     }
 
@@ -159,16 +193,27 @@ public static class DbSeeder
         string? password)
     {
         var existing = await userManager.FindByIdAsync(id.ToString());
+
         if (existing is not null)
         {
             if (!await userManager.HasPasswordAsync(existing))
             {
-                EnsureSucceeded(await userManager.AddPasswordAsync(existing,
-                    password ?? throw new InvalidOperationException("Seed password is missing.")), "set study password");
+                EnsureSucceeded(
+                    await userManager.AddPasswordAsync(
+                        existing,
+                        password ?? throw new InvalidOperationException("Seed password is missing.")),
+                    "set study password");
+
                 await userManager.UpdateSecurityStampAsync(existing);
             }
+
             if (!await userManager.IsInRoleAsync(existing, role))
-                EnsureSucceeded(await userManager.AddToRoleAsync(existing, role), "assign study role");
+            {
+                EnsureSucceeded(
+                    await userManager.AddToRoleAsync(existing, role),
+                    "assign study role");
+            }
+
             return existing;
         }
 
@@ -180,11 +225,17 @@ public static class DbSeeder
             DisplayName = displayName,
             EmailConfirmed = true
         };
+
         var createResult = await userManager.CreateAsync(
             user,
             password ?? throw new InvalidOperationException("Seed password is missing."));
+
         EnsureSucceeded(createResult, $"create user {userName}");
-        EnsureSucceeded(await userManager.AddToRoleAsync(user, role), $"assign role {role}");
+
+        EnsureSucceeded(
+            await userManager.AddToRoleAsync(user, role),
+            $"assign role {role}");
+
         return user;
     }
 
@@ -196,6 +247,8 @@ public static class DbSeeder
         }
 
         var codes = string.Join(", ", result.Errors.Select(error => error.Code));
-        throw new InvalidOperationException($"Identity seed operation '{operation}' failed: {codes}.");
+
+        throw new InvalidOperationException(
+            $"Identity seed operation '{operation}' failed: {codes}.");
     }
 }

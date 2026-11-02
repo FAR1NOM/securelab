@@ -1,3 +1,5 @@
+﻿
+using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
@@ -5,19 +7,43 @@ using SecureLab.Api.Presentation.Contracts;
 
 namespace SecureLab.Api.Application.Incidents;
 
-public sealed class IncidentQueries(SecureLabDbContext dbContext, ILogger<IncidentQueries> logger)
+public sealed class IncidentQueries(
+    SecureLabDbContext dbContext,
+    ILogger<IncidentQueries> logger)
 {
+    private IQueryable<Incident> GetVisibleIncidents(ClaimsPrincipal user)
+    {
+        if (user.IsInRole(DbSeeder.AnalystRole))
+        {
+            return dbContext.Incidents.AsNoTracking();
+        }
+
+        if (user.IsInRole(DbSeeder.ReporterRole)
+            && Guid.TryParse(
+                user.FindFirstValue(ClaimTypes.NameIdentifier),
+                out var userId))
+        {
+            return dbContext.Incidents
+                .AsNoTracking()
+                .Where(incident => incident.OwnerUserId == userId);
+        }
+
+        return dbContext.Incidents
+            .AsNoTracking()
+            .Where(_ => false);
+    }
+
     public async Task<IReadOnlyList<IncidentListItemResponse>> GetListAsync(
+        ClaimsPrincipal user,
         IncidentStatus? status,
         CancellationToken cancellationToken)
     {
-        logger.LogInformation("Loading incidents with status filter {Status}", status);
+        logger.LogInformation("Loading visible incidents with status filter {Status}", status);
 
-        var query = dbContext.Incidents.AsNoTracking();
+        var query = GetVisibleIncidents(user);
+
         if (status is not null)
-        {
             query = query.Where(incident => incident.Status == status);
-        }
 
         return await query
             .OrderByDescending(incident => incident.CreatedAtUtc)
@@ -31,45 +57,51 @@ public sealed class IncidentQueries(SecureLabDbContext dbContext, ILogger<Incide
             .ToListAsync(cancellationToken);
     }
 
-    public Task<IncidentDetailsResponse?> GetDetailsAsync(Guid id, CancellationToken cancellationToken)
-    {
-        logger.LogInformation("Loading incident {IncidentId}", id);
 
-        return dbContext.Incidents
-            .AsNoTracking()
-            .Where(incident => incident.Id == id)
-            .Select(incident => new IncidentDetailsResponse(
-                incident.Id,
-                incident.Title,
-                incident.Description,
-                incident.Severity.ToString(),
-                incident.Status.ToString(),
-                incident.OccurredAtUtc,
-                incident.CreatedAtUtc,
-                incident.Owner.DisplayName,
-                incident.Comments
-                    .Where(comment => !comment.IsInternal)
-                    .OrderBy(comment => comment.CreatedAtUtc)
-                    .Select(comment => new IncidentCommentResponse(
-                        comment.Id,
-                        comment.Author.DisplayName,
-                        comment.Text,
-                        comment.CreatedAtUtc))
-                    .ToList()))
-            .SingleOrDefaultAsync(cancellationToken);
-    }
+public Task<IncidentDetailsResponse?> GetDetailsAsync(
+    Guid id,
+    ClaimsPrincipal user,
+    CancellationToken cancellationToken)
+{
+    logger.LogInformation("Loading visible incident {IncidentId}", id);
+
+    var canSeeInternalComments = user.IsInRole(DbSeeder.AnalystRole);
+
+    return GetVisibleIncidents(user)
+        .Where(incident => incident.Id == id)
+        .Select(incident => new IncidentDetailsResponse(
+            incident.Id,
+            incident.Title,
+            incident.Description,
+            incident.Severity.ToString(),
+            incident.Status.ToString(),
+            incident.OccurredAtUtc,
+            incident.CreatedAtUtc,
+            incident.Owner.DisplayName,
+            incident.Comments
+                .Where(comment => !comment.IsInternal || canSeeInternalComments)
+                .OrderBy(comment => comment.CreatedAtUtc)
+                .Select(comment => new IncidentCommentResponse(
+                    comment.Id,
+                    comment.Author.DisplayName,
+                    comment.Text,
+                    comment.CreatedAtUtc))
+                .ToList()))
+        .SingleOrDefaultAsync(cancellationToken);
+}
+
 
     public async Task<IReadOnlyList<IncidentSeveritySummaryResponse>> GetSeveritySummaryAsync(
+        ClaimsPrincipal user,
         IncidentStatus? status,
         CancellationToken cancellationToken)
     {
-        logger.LogInformation("Building incident severity summary with status filter {Status}", status);
+        logger.LogInformation("Building visible incident severity summary with status filter {Status}", status);
 
-        var query = dbContext.Incidents.AsNoTracking();
+        var query = GetVisibleIncidents(user);
+
         if (status is not null)
-        {
             query = query.Where(incident => incident.Status == status);
-        }
 
         var grouped = await query
             .GroupBy(incident => incident.Severity)
@@ -78,11 +110,6 @@ public sealed class IncidentQueries(SecureLabDbContext dbContext, ILogger<Incide
 
         var countsBySeverity = grouped.ToDictionary(item => item.Severity, item => item.Count);
 
-        // Політика нульових груп: повний перелік enum IncidentSeverity.
-        // Рівні, відсутні в результаті (наприклад Critical на baseline seed,
-        // або будь-який рівень за активного фільтра status), повертаються з Count = 0.
-        // Сталий порядок: порядок оголошення enum (Low, Medium, High, Critical) —
-        // порядок критичності, а не лексикографічний порядок тексту в PostgreSQL.
         var result = Enum.GetValues<IncidentSeverity>()
             .Select(severity => new IncidentSeveritySummaryResponse(
                 severity.ToString(),

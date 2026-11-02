@@ -15,19 +15,23 @@ public static class Lab02Endpoints
     private static readonly TimeSpan MaxFutureSkew = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MaxIncidentAge = TimeSpan.FromDays(365);
 
-    public static void MapLab02Endpoints(this WebApplication app)
-    {
-        app.MapGet("/api/incidents/search", SearchAsync)
-            .WithName("SearchIncidents");
+  public static void MapLab02Endpoints(this WebApplication app)
+{
+    app.MapGet("/api/incidents/search", SearchAsync)
+        .WithName("SearchIncidents")
+        .RequireAuthorization()
+        .RequireRateLimiting("incident-search");
 
-        app.MapPost("/api/incidents", CreateAsync)
-            .WithName("CreateIncident")
-            .RequireAuthorization();
-    }
+    app.MapPost("/api/incidents", CreateAsync)
+        .WithName("CreateIncident")
+        .RequireAuthorization()
+        .RequireRateLimiting("incident-create");
+}
 
     private static async Task<IResult> SearchAsync(
         string? q,
         string? sortBy,
+        ClaimsPrincipal user,
         SecureLabDbContext db,
         CancellationToken ct)
     {
@@ -42,7 +46,6 @@ public static class Lab02Endpoints
                 });
         }
 
-        // Сортування дозволене лише за визначеним переліком полів.
         var sortColumn = sortBy switch
         {
             null or "" or "createdAtUtc" => "created_at_utc",
@@ -60,27 +63,47 @@ public static class Lab02Endpoints
                 });
         }
 
-        // Значення пошуку передається як параметр, а не вставляється в SQL.
-        var pattern = $"%{search}%";
+        IQueryable<Incident> query;
 
-        var rows = await db.Incidents
-            .FromSqlInterpolated($"""
-                SELECT *
-                FROM incidents
-                WHERE title ILIKE {pattern}
-                   OR description ILIKE {pattern}
-                """)
-            .AsNoTracking()
-            .ToListAsync(ct);
+        if (user.IsInRole("Analyst"))
+        {
+            query = db.Incidents.AsNoTracking();
+        }
+        else if (user.IsInRole("Reporter"))
+        {
+            var userIdClaim = user.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (!Guid.TryParse(userIdClaim, out var userId))
+            {
+                return Results.Unauthorized();
+            }
+
+            query = db.Incidents
+                .AsNoTracking()
+                .Where(x => x.OwnerUserId == userId);
+        }
+        else
+        {
+            return Results.Forbid();
+        }
+
+        if (search.Length > 0)
+        {
+            var pattern = $"%{search}%";
+
+            query = query.Where(x =>
+                EF.Functions.ILike(x.Title, pattern)
+                || EF.Functions.ILike(x.Description, pattern));
+        }
 
         var ordered = sortColumn switch
         {
-            "severity" => rows.OrderBy(x => x.Severity),
-            "status" => rows.OrderBy(x => x.Status),
-            _ => rows.OrderByDescending(x => x.CreatedAtUtc)
+            "severity" => query.OrderBy(x => x.Severity),
+            "status" => query.OrderBy(x => x.Status),
+            _ => query.OrderByDescending(x => x.CreatedAtUtc)
         };
 
-        var result = ordered
+        var result = await ordered
             .Take(50)
             .Select(row => new
             {
@@ -90,7 +113,8 @@ public static class Lab02Endpoints
                 Severity = row.Severity.ToString(),
                 Status = row.Status.ToString(),
                 row.CreatedAtUtc
-            });
+            })
+            .ToListAsync(ct);
 
         return Results.Ok(result);
     }
@@ -101,6 +125,11 @@ public static class Lab02Endpoints
         SecureLabDbContext db,
         CancellationToken ct)
     {
+        if (!user.IsInRole("Reporter"))
+        {
+            return Results.Forbid();
+        }
+
         var now = DateTimeOffset.UtcNow;
         var errors = new Dictionary<string, string[]>();
 
@@ -127,14 +156,14 @@ public static class Lab02Endpoints
 
         IncidentSeverity severity = default;
 
-var severityValid =
-    !string.IsNullOrWhiteSpace(request.Severity)
-    && !request.Severity.Contains(',')
-    && Enum.TryParse<IncidentSeverity>(
-        request.Severity,
-        ignoreCase: true,
-        out severity)
-    && Enum.IsDefined(severity);
+        var severityValid =
+            !string.IsNullOrWhiteSpace(request.Severity)
+            && !request.Severity.Contains(',')
+            && Enum.TryParse<IncidentSeverity>(
+                request.Severity,
+                ignoreCase: true,
+                out severity)
+            && Enum.IsDefined(severity);
 
         if (!severityValid)
         {
