@@ -16,6 +16,18 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Lab05Probe", policy =>
+    {
+        policy
+            .WithOrigins("http://localhost:4173")
+            .WithMethods("GET")
+            .WithHeaders("X-Lab-Cors-Probe")
+            .AllowCredentials();
+    });
+});
+
 var connectionString = builder.Configuration.GetConnectionString("SecureLab")
     ?? throw new InvalidOperationException(
         "Connection string 'SecureLab' is not configured.");
@@ -89,18 +101,33 @@ if (resetRequested)
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
+
 app.Use(async (context, next) =>
 {
     context.Response.Headers.XContentTypeOptions = "nosniff";
     context.Response.Headers.Append("Referrer-Policy", "no-referrer");
 
+    if (!context.Request.Path.StartsWithSegments("/scalar"))
+    {
+        context.Response.Headers["Content-Security-Policy"] =
+            "default-src 'self'; frame-ancestors 'none'";
+    }
+
     await next(context);
 });
+
 
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
+}
+
+app.UseRouting();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors("Lab05Probe");
 }
 
 app.UseAuthentication();
